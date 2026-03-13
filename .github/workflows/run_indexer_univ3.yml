@@ -82,15 +82,15 @@ jobs:
             echo "No changes to commit"
           else
             BLOCK=$(python - <<'PYEOF'
-import json
-f = "state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json"
-try:
-    d = json.load(open(f))
-    print(d.get("last_scanned_block", "unknown"))
-except Exception:
-    print("unknown")
-PYEOF
-)
-            git commit -m "chore: UniV3 LP snapshot block ${BLOCK}"
-            git push
-          fi
+          import json
+          f = "state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json"
+          try:
+             d = json.load(open(f))
+             print(d.get("last_scanned_block", "unknown"))
+           except Exception:
+               print("unknown")
+           PYEOF
+           )
+             git commit -m "chore: UniV3 LP snapshot block ${BLOCK}"
+             git push
+           fi
