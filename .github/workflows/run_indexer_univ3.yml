@@ -2,9 +2,16 @@ name: uniswap-v3-lp-indexer
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * *"
+    - cron: "0 19 * * *"
 
 permissions:
   contents: write
+
+concurrency:
+  group: uniswap-v3-lp-indexer-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   run-indexer:
@@ -46,6 +53,8 @@ jobs:
       - name: Run indexer
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python src/indexer_univ3.py
 
       - name: Upload CSV artifacts
@@ -63,13 +72,25 @@ jobs:
           git add \
             state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json \
             state/0x132531f014002acc9a9ccc98057fe05a88070ace/token_ids.json \
-            out/0x132531f014002acc9a9ccc98057fe05a88070ace/*.csv \
+            "out/0x132531f014002acc9a9ccc98057fe05a88070ace/open_positions.csv" \
+            "out/0x132531f014002acc9a9ccc98057fe05a88070ace/top_lp.csv" \
+            "out/0x132531f014002acc9a9ccc98057fe05a88070ace/buckets.csv" \
+            "out/0x132531f014002acc9a9ccc98057fe05a88070ace/summary.csv" \
             || true
 
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            BLOCK=$(python -c "import json; d=json.load(open('state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json')); print(d.get('last_scanned_block','?'))")
+            BLOCK=$(python - <<'PYEOF'
+import json
+f = "state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json"
+try:
+    d = json.load(open(f))
+    print(d.get("last_scanned_block", "unknown"))
+except Exception:
+    print("unknown")
+PYEOF
+)
             git commit -m "chore: UniV3 LP snapshot block ${BLOCK}"
             git push
           fi
