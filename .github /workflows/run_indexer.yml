@@ -1,1 +1,80 @@
+name: uniswap-v3-lp-indexer
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-indexer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json
+            state/0x132531f014002acc9a9ccc98057fe05a88070ace/events.ndjson
+            state/0x132531f014002acc9a9ccc98057fe05a88070ace/token_ids.json
+          key: lp-indexer-state-${{ github.ref_name }}
+          restore-keys: lp-indexer-state-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run indexer
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
+        run: python src/indexer_univ3.py
+
+      - name: Upload CSV artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: uniswap-v3-lp-exports-${{ github.run_number }}
+          path: out/0x132531f014002acc9a9ccc98057fe05a88070ace/*.csv
+          retention-days: 30
+
+      - name: Commit state and exports
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json \
+            state/0x132531f014002acc9a9ccc98057fe05a88070ace/token_ids.json \
+            out/0x132531f014002acc9a9ccc98057fe05a88070ace/*.csv \
+            || true
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            BLOCK=$(python -c "
+import json, os
+f = 'state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json'
+d = json.load(open(f))
+print(d.get('last_scanned_block', '?'))
+")
+            git commit -m "chore: UniV3 LP snapshot block ${BLOCK}"
+            git push
+          fi
