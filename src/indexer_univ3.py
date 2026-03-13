@@ -885,17 +885,17 @@ def export_to_sheets(pos_rows: list, bucket_rows: list, summary_rows: list):
             return sh.add_worksheet(title=title, rows=2000, cols=30)
 
     def overwrite(title: str, rows: list):
-    ws = get_or_create(title)
-    ws.clear()
+        ws = get_or_create(title)
+        ws.clear()
 
-    if not rows:
-        print(f"  [sheets] '{title}' cleared (0 rows)")
-        return
+        if not rows:
+           print(f"  [sheets] '{title}' cleared (0 rows)")
+           return
 
-    headers = list(rows[0].keys())
-    data = [headers] + [[str(r.get(h, "")) for h in headers] for r in rows]
-    ws.update(data, value_input_option="USER_ENTERED")
-    print(f"  [sheets] '{title}' updated ({len(rows)} rows)")
+        headers = list(rows[0].keys())
+        data = [headers] + [[str(r.get(h, "")) for h in headers] for r in rows]
+        ws.update(data, value_input_option="USER_ENTERED")
+        print(f"  [sheets] '{title}' updated ({len(rows)} rows)")
   
     # --- overwrite current snapshot sheets ---
     overwrite("positions", pos_rows)
