@@ -18,6 +18,7 @@ import os
 import json
 import csv
 import time
+from datetime import datetime, timezone
 from decimal import Decimal, getcontext
 from collections import defaultdict
 
@@ -42,6 +43,11 @@ OUR_WALLETS = {
     "0x5f0aea872b7d6dbcc181338f80048b130e443e3b": "our_pool_wallet",
     "0x44a3f0354f4c10eb9cd93e522b5e3210d126f054": "team_mm2",
 }
+
+# Google Sheets — set SPREADSHEET_ID to your sheet ID (from URL)
+# Leave empty to skip Sheets export
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "")
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS", "")
 
 POOL_ID = POOL.lower()
 STATE_DIR = os.path.join("state", POOL_ID)
@@ -618,7 +624,7 @@ def load_pool_info() -> dict:
 # =========================================================
 # BUILD CSV EXPORTS
 # =========================================================
-def build_exports(positions: dict, token_ids_state: dict, pool_info: dict):
+def build_exports(positions: dict, token_ids_state: dict, pool_info: dict, sync: dict = None):
     sym0 = pool_info["sym0"].lower()
     sym1 = pool_info["sym1"].lower()
     dec0 = pool_info["dec0"]
@@ -797,6 +803,7 @@ def build_exports(positions: dict, token_ids_state: dict, pool_info: dict):
         {"metric": "npm", "value": str(NPM)},
         {"metric": "chain_id", "value": CHAIN_ID},
         {"metric": "from_block", "value": FROM_BLOCK},
+        {"metric": "last_scanned_block", "value": (sync or {}).get("last_scanned_block", "")},
         {"metric": f"token0_{sym0}", "value": pool_info["token0"]},
         {"metric": f"token1_{sym1}", "value": pool_info["token1"]},
         {"metric": "dec0", "value": dec0},
@@ -833,6 +840,139 @@ def write_csv(path: str, rows: list, fieldnames: list = None):
         if rows:
             w.writerows(rows)
     print(f"  -> {path} ({len(rows)} rows)")
+
+
+# =========================================================
+# GOOGLE SHEETS EXPORT
+# =========================================================
+def export_to_sheets(pos_rows: list, bucket_rows: list, summary_rows: list):
+    """
+    Writes data to Google Sheets:
+      - 'positions'  : overwritten each run (current snapshot)
+      - 'buckets'    : overwritten each run
+      - 'summary'    : overwritten each run
+      - 'snapshots'  : appended only (history: timestamp + key metrics)
+    Skipped silently if SPREADSHEET_ID or GOOGLE_CREDENTIALS are not set.
+    """
+    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
+        print("  [sheets] SPREADSHEET_ID or GOOGLE_CREDENTIALS not set — skipping")
+        return
+
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+    except ImportError:
+        print("  [sheets] gspread not installed — skipping (add gspread google-auth to requirements.txt)")
+        return
+
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(SPREADSHEET_ID)
+    except Exception as e:
+        print(f"  [sheets] auth/open failed: {e}")
+        return
+
+    def get_or_create(title: str):
+        try:
+            return sh.worksheet(title)
+        except gspread.WorksheetNotFound:
+            return sh.add_worksheet(title=title, rows=2000, cols=30)
+
+    def overwrite(title: str, rows: list):
+    ws = get_or_create(title)
+    ws.clear()
+
+    if not rows:
+        print(f"  [sheets] '{title}' cleared (0 rows)")
+        return
+
+    headers = list(rows[0].keys())
+    data = [headers] + [[str(r.get(h, "")) for h in headers] for r in rows]
+    ws.update(data, value_input_option="USER_ENTERED")
+    print(f"  [sheets] '{title}' updated ({len(rows)} rows)")
+  
+    # --- overwrite current snapshot sheets ---
+    overwrite("positions", pos_rows)
+    overwrite("buckets", bucket_rows)
+    overwrite("summary", summary_rows)
+
+    # --- append to snapshots history ---
+    try:
+        ws_snap = get_or_create("snapshots")
+        # Build header if sheet is empty
+        existing = ws_snap.get_all_values()
+
+        snap_headers = [
+            "timestamp_utc", "last_block",
+            "price_usd_per_lmts", "current_tick",
+            "open_positions", "in_range_positions",
+            "our_positions", "our_liquidity",
+            "our_cur_usdc", "our_cur_lmts",
+            "ext_liquidity", "ext_cur_usdc", "ext_cur_lmts",
+            "unique_real_owners",
+        ]
+
+        if not existing or existing[0] != snap_headers:
+            ws_snap.clear()
+            ws_snap.append_row(snap_headers, value_input_option="USER_ENTERED")
+
+        # Extract values from summary_rows
+        sm = {r["metric"]: str(r["value"]) for r in summary_rows}
+        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        snap_row = [
+            now_utc,
+            sm.get("last_scanned_block", ""),
+            sm.get("price_usd_per_lmts", ""),
+            sm.get("current_tick", ""),
+            sm.get("open_positions", ""),
+            sm.get("in_range_positions", ""),
+            sm.get("our_positions", ""),
+            sm.get("our_liquidity", ""),
+            sm.get("our_cur_usdc", ""),    # key uses sym names, resolved below
+            sm.get("our_cur_lmts", ""),
+            sm.get("ext_liquidity", ""),
+            sm.get("ext_cur_usdc", ""),
+            sm.get("ext_cur_lmts", ""),
+            sm.get("unique_real_owners", ""),
+        ]
+
+        # summary keys use dynamic sym names like our_cur_usdc / our_cur_lmts
+        # try both lowercase and find actual keys
+        def find_sm(prefix):
+            for k, v in sm.items():
+                if k.startswith(prefix):
+                    return v
+            return ""
+
+        snap_row = [
+            now_utc,
+            sm.get("last_scanned_block", ""),
+            sm.get("price_usd_per_lmts", ""),
+            sm.get("current_tick", ""),
+            sm.get("open_positions", ""),
+            sm.get("in_range_positions", ""),
+            sm.get("our_positions", ""),
+            sm.get("our_liquidity", ""),
+            find_sm("our_cur_usdc") or find_sm("our_cur_u"),
+            find_sm("our_cur_lmts") or find_sm("our_cur_l"),
+            sm.get("ext_liquidity", ""),
+            find_sm("ext_cur_usdc") or find_sm("ext_cur_u"),
+            find_sm("ext_cur_lmts") or find_sm("ext_cur_l"),
+            sm.get("unique_real_owners", ""),
+        ]
+
+        ws_snap.append_row(snap_row, value_input_option="USER_ENTERED")
+        print(f"  [sheets] 'snapshots' row appended ({now_utc})")
+
+    except Exception as e:
+        print(f"  [sheets] snapshots append failed: {e}")
 
 
 # =========================================================
@@ -899,12 +1039,18 @@ def main():
     print("=" * 60)
     print("WRITING EXPORTS")
     print("=" * 60)
-    pos_rows, lp_rows, bucket_rows, summary_rows = build_exports(positions, token_ids_state, pool_info)
+    pos_rows, lp_rows, bucket_rows, summary_rows = build_exports(positions, token_ids_state, pool_info, sync)
 
     write_csv(os.path.join(OUT_DIR, "open_positions.csv"), pos_rows)
     write_csv(os.path.join(OUT_DIR, "top_lp.csv"), lp_rows)
     write_csv(os.path.join(OUT_DIR, "buckets.csv"), bucket_rows)
     write_csv(os.path.join(OUT_DIR, "summary.csv"), summary_rows, fieldnames=["metric", "value"])
+
+    print()
+    print("=" * 60)
+    print("GOOGLE SHEETS EXPORT")
+    print("=" * 60)
+    export_to_sheets(pos_rows, bucket_rows, summary_rows)
 
     print()
     print("=== SUMMARY ===")
