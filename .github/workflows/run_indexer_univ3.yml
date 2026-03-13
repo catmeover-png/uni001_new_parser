@@ -79,9 +79,9 @@ jobs:
             || true
 
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+             echo "No changes to commit"
           else
-            BLOCK=$(python - <<'PYEOF'
+             BLOCK=$(python - <<'PYEOF'
           import json
           f = "state/0x132531f014002acc9a9ccc98057fe05a88070ace/sync.json"
           try:
@@ -91,6 +91,6 @@ jobs:
                print("unknown")
            PYEOF
            )
-             git commit -m "chore: UniV3 LP snapshot block ${BLOCK}"
-             git push
-           fi
+                git commit -m "chore: UniV3 LP snapshot block ${BLOCK}"
+                git push
+                fi
