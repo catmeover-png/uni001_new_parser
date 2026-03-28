@@ -2,8 +2,6 @@ name: uniswap-v3-lp-indexer
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "12 */2 * * *"
   
 
 permissions:
